@@ -224,6 +224,18 @@ To create a new Git repository in RStudio, we go to `File` > `New Project...` > 
 
 To commit the data, we go the the tab named `Git` and we press `Commit`. Then we select the files to commit and enter a message.
 
+Finally, we can upload the code to GitHub:
+
+```{r}
+library(gitcreds)
+gitcreds::gitcreds_set()
+```
+
+
+```{r, include=TRUE}
+library(usethis)
+usethis::use_github()
+```
 
 
 
