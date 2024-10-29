@@ -1,0 +1,246 @@
+---
+title: "PEC 1 - Les òmiques"
+author: "Marc Canela Grimau"
+date: "2024-10-28"
+output: pdf_document
+---
+
+# Download and Explore the Data Set
+
+In this report, we are going to use the data used in the paper *"Metabotypes of response to bariatric surgery independent of the magnitude of weight loss"*. The data set is formed by the following files:
+
+- `DataInfo_S013.csv`: Metadata. Information on each column in the "DataValues_S013.csv" file.
+- `DataValues_S013.csv`: Clinical and metabolomic values for 39 patients at 5 time points.
+- `AAInformation_S006.csv`: Additional information on metabolites in the "DataValues_S013.csv" file.
+
+We will download the files from GitHub and open them in R:
+
+```{r, include=TRUE}
+setwd(dir = "~/Desktop/Canela-Grimau-Marc-PEC1")
+DataInfo_S013 <- read.csv("DataInfo_S013.csv", header=TRUE, row.names=1)
+DataValues_S013 <- read.csv("DataValues_S013.csv", header=TRUE, row.names=1)
+AAInformation_S006 <- read.csv("AAInformation_S006.csv", header=TRUE, row.names=1)
+```
+
+Now we'll briefly explore the files we've downloaded:
+
+```{r, include=TRUE}
+str(DataInfo_S013)
+head(DataInfo_S013)
+```
+
+The `DataInfo_S013` contains information on each column from `DataValues_S013`: the names of each column in `VarName`, the type in `varType`, and the description in `Description`. The `Description` feature is not informative, as it's empty.
+
+```{r, include=TRUE}
+str(AAInformation_S006)
+head(AAInformation_S006)
+```
+
+The `AAInformation_S006` contains information on the metabolites from `DataValues_S013`: the class of each meatabolite in `Class`, the abbreviation and full name in `Metabolite.abbreviation` and `Metabolite`, respectively, the platform in `Platform`, and the type in `Data.type`.
+
+And now that we know the structure of the data set, we can create the `SummarizedExperiment` class.
+
+# Create the SummarizedExperiment Class
+
+We will first prepare the data. In a `SummarizedExperiment` class, rows represent features of interest and columns represent samples, so we may have to transpose the `DataValues_S013`. The `rowData` should have the same amount of rows are the `DataValues_S013`.
+
+```{r, include=TRUE}
+library(SummarizedExperiment)
+data_matrix <- t(as.matrix(DataValues_S013))
+rowData <- DataFrame(DataInfo_S013[, c("VarName", "varTpe")])
+```
+
+And now we'll create the class. We would only include information on each row (i.e., on each variable), and not on each column because the dataset doesn't provide this information.
+
+```{r, include=TRUE}
+metabo <- SummarizedExperiment(
+  assays = list(counts = data_matrix),
+  rowData = rowData
+)
+metabo
+```
+
+We can save the data and metadata as `.Rda` files:
+
+```{r, include=TRUE}
+save(DataInfo_S013, DataValues_S013, AAInformation_S006, metabo, file = "data_and_metadata.rda")
+```
+
+
+# Exploration of the data
+
+All the following code can be found in the file `exploration.R`.
+
+We will first filter the numeric variables from `DataValues_S013` using the information in `DataInfo_S013`:
+
+```{r, include=TRUE}
+library(dplyr)
+numeric_vars <- DataInfo_S013 %>%
+  filter(varTpe %in% c("numeric", "integer")) %>%
+  pull(VarName)
+DataValues_S013_numeric <- DataValues_S013 %>%
+  select(all_of(numeric_vars))
+```
+
+Now we will perform a PCA to see differences:
+
+```{r, include=TRUE}
+time_vars <- numeric_vars[grepl("_T[0-9]+$", numeric_vars)]
+data_pca <- DataValues_S013_numeric %>%
+  select(all_of(c(time_vars, "Group")))
+data_pca_clean <- data_pca %>%
+  select(where(~ !any(is.na(.)) && sd(.) != 0))
+pca_result <- prcomp(data_pca_clean[, -ncol(data_pca_clean)], scale=TRUE)
+summary(pca_result)
+plot(pca_result)
+```
+
+We will use the first two variables, as they cover the over the 70% of the variance. Let's see which variables explain a higher percentage of the variance of each principal component:
+
+```{r, include=TRUE}
+loading_scores <- pca_result$rotation
+
+top_pc1 <- loading_scores %>%
+  as.data.frame() %>%
+  mutate(variable = rownames(loading_scores)) %>%
+  arrange(desc(abs(PC1))) %>%
+  slice(1:5)
+top_pc1['PC1']
+
+top_pc2 <- loading_scores %>%
+  as.data.frame() %>%
+  mutate(variable = rownames(loading_scores)) %>%
+  arrange(desc(abs(PC2))) %>%
+  slice(1:5)
+top_pc2['PC2']
+```
+
+The top 5 variables correspond in both cases to the *T0* time point. We can now check the information of these variables on the `AAInformation_S006`:
+
+```{r, include=TRUE}
+pc1 <- sub("_T0$", "", row.names(top_pc1['PC1']))
+pc1 <- gsub("\\.", " ", pc1)
+pc1 <- sub(" (?!.* )", ":", pc1, perl = TRUE)
+pc1_info <- AAInformation_S006 %>%
+  filter(Metabolite.abbreviation %in% pc1)
+pc1_info
+
+pc2 <- sub("_T0$", "", row.names(top_pc2['PC2']))
+pc2 <- gsub("\\.", " ", pc2)
+pc2 <- sub(" (?!.* )", ":", pc2, perl = TRUE)
+pc2_info <- AAInformation_S006 %>%
+  filter(Metabolite.abbreviation %in% pc2)
+pc2_info
+```
+
+From the available information from `AAInformation_S006`, we can see that all the top 5 variables from PC1 and PC2 correspond to glycerophospholipids, all of them semi-quantified using FIA-MS/MS. Now we are going to plot all the individuals and divide it by group, gender, and surgery:
+
+```{r, include=TRUE}
+library(ggplot2)
+plot_pca_data <- as.data.frame(pca_result$x)
+plot_pca_data$group <- as.character(data_pca_clean$Group)
+
+pca_plot <- ggplot(plot_pca_data, aes(x = PC1, y = PC2, color = group)) +
+    geom_point() +
+    labs(title = "PCA of Metabolomic Data",
+         x = "PC1",
+         y = "PC2") +
+    theme_minimal() +
+    theme(legend.position = "top")
+pca_plot
+```
+
+From the plot of the PCA by group, we can observe that the PC1 clearly separates quite well both groups. We can perform a statistical text with the PC1 to observe if the differences are significant:
+
+```{r, include=TRUE}
+var.test(plot_pca_data$PC1[plot_pca_data$group == '1'],
+         plot_pca_data$PC1[plot_pca_data$group == '2'])
+t.test(PC1 ~ group, data = plot_pca_data, var.equal = TRUE)
+```
+
+Indeed, the PC1 shows significant differences between groups 1 and 2 (p-value = 6.776e-05).
+
+```{r, include=TRUE}
+plot_pca_data$group <- as.character(DataValues_S013$GENDER)
+
+pca_plot <- ggplot(plot_pca_data, aes(x = PC1, y = PC2, color = group)) +
+    geom_point() +
+    labs(title = "PCA of Metabolomic Data",
+         x = "PC1",
+         y = "PC2") +
+    theme_minimal() +
+    theme(legend.position = "top")
+pca_plot
+
+var.test(plot_pca_data$PC1[plot_pca_data$group == 'F'],
+         plot_pca_data$PC1[plot_pca_data$group == 'M'])
+t.test(PC1 ~ group, data = plot_pca_data, var.equal = TRUE)
+```
+
+There are no significant differences between genders (p-value = 0.4089).
+
+```{r, include=TRUE}
+plot_pca_data$group <- as.character(DataValues_S013$SURGERY)
+
+pca_plot <- ggplot(plot_pca_data, aes(x = PC1, y = PC2, color = group)) +
+    geom_point() +
+    labs(title = "PCA of Metabolomic Data",
+         x = "PC1",
+         y = "PC2") +
+    theme_minimal() +
+    theme(legend.position = "top")
+pca_plot
+
+var.test(plot_pca_data$PC1[plot_pca_data$group == 'by pass'],
+         plot_pca_data$PC1[plot_pca_data$group == 'tubular'])
+t.test(PC1 ~ group, data = plot_pca_data, var.equal = TRUE)
+```
+
+When we consider the type of surgery, we observe that "by pass" group is much more scattered than the "tubular" one. Indeed, both types of surgery are significantly different considering the PC1 (p-value= 0.0106).
+
+Another interesting technique is applying clustering techniques. We'll start by using a hierarchical technique and draw a dendrogram:
+
+```{r, include=TRUE}
+data_pca_clean$Group <- NULL
+hierarchical_data <- scale(data_pca_clean)
+matdis <- dist(hierarchical_data)
+hierarchical_data.hc <- hclust(matdis, method="average")
+plot(hierarchical_data.hc)
+cor(matdis, cophenetic(hierarchical_data.hc))
+```
+
+The cophenetic correlation is quite high (0.8676329), which indicates that the dendrogram reflects the actual distances in your data quite well, capturing about 86.76% of the original distance structure of the data. There are two individuals (12 and 37) which cluster apart from the rest, and indeed correspond to the outlier point from Group 2 that we observed in the PCA.
+
+# GitHub repository
+
+The first step is checking that we have Git installed through a `bash` terminal cell:
+
+```{bash}
+which git
+git --version
+```
+
+To create a new Git repository in RStudio, we go to `File` > `New Project...` > `New Directory` > `New Project`. Then we give it the name `Canela-Grimau-Marc-PEC1` and we also select `Create a git repository`.
+
+To commit the data, we go the the tab named `Git` and we press `Commit`. Then we select the files to commit and enter a message.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
